@@ -26,7 +26,15 @@ jobs:
           java-version: '17'
       - name: Extract the anonymized Android teaching project
         working-directory: ${{ github.workspace }}
-        run: Expand-Archive ./service-countdown-source.zip -DestinationPath ./service-lab -Force
+        run: |
+          Expand-Archive ./service-countdown-source.zip -DestinationPath ./service-lab -Force
+          # Hosted Windows reports WHPX usable but cannot create a partition.
+          # Use the official emulator's supported software CPU engine.
+          $bootstrap = './service-lab/tools/windows-ci.ps1'
+          $code = Get-Content $bootstrap -Raw
+          $old = '$acceleration = if ($LASTEXITCODE -eq 0) { ''auto'' } else { ''off'' }'
+          if (-not $code.Contains($old)) { throw 'Unexpected emulator bootstrap.' }
+          $code.Replace($old, '$acceleration = ''off''') | Set-Content $bootstrap -Encoding utf8
       - name: Windows build unit tests and lint
         run: ./tools/windows-ci.ps1 -Phase Build -DeviceTests
       - name: Android emulator two complete countdown cycles
