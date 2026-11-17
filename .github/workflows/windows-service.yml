@@ -35,6 +35,11 @@ jobs:
           $old = '$acceleration = if ($LASTEXITCODE -eq 0) { ''auto'' } else { ''off'' }'
           if (-not $code.Contains($old)) { throw 'Unexpected emulator bootstrap.' }
           $code.Replace($old, '$acceleration = ''off''') | Set-Content $bootstrap -Encoding utf8
+          # Google's documented Maven Central mirror avoids shared-runner 429s.
+          $settings = './service-lab/settings.gradle'
+          $repo = 'maven { url "https://maven-central.storage-download.googleapis.com/maven2/" }; mavenCentral()'
+          (Get-Content $settings -Raw).Replace('mavenCentral()', $repo) | Set-Content $settings -Encoding utf8
+          'org.gradle.workers.max=2' | Add-Content './service-lab/gradle.properties'
       - name: Windows build unit tests and lint
         run: ./tools/windows-ci.ps1 -Phase Build -DeviceTests
       - name: Android emulator two complete countdown cycles
@@ -47,7 +52,7 @@ jobs:
         if: ${{ always() }}
         uses: actions/upload-artifact@v4
         with:
-          name: service-countdown-windows-${{ github.run_id }}
+          name: service-countdown-windows-${{ github.run_id }}-${{ github.run_attempt }}
           path: service-lab/artifacts/windows
           if-no-files-found: error
           retention-days: 7
