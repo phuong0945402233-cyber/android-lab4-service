@@ -34,6 +34,10 @@ jobs:
           $code = Get-Content $bootstrap -Raw
           $old = '$acceleration = if ($LASTEXITCODE -eq 0) { ''auto'' } else { ''off'' }'
           if (-not $code.Contains($old)) { throw 'Unexpected emulator bootstrap.' }
+          # Pin the official 31.3.14 emulator after a Windows TCG access violation.
+          $code = $code.Replace('13610412','9322596').Replace('35.6.11','31.3.14')
+          $code = $code.Replace('0865071aecf3d90a5b967cb6cb0cd48bea0a58a26ef4953b32037671c129b7e9','647f40e2692001f3b6d55e02d48d056b0eb89dd89e76a5adb896400039016638')
+          $code = $code.Replace("@('major','35'),@('minor','6'),@('micro','11')", "@('major','31'),@('minor','3'),@('micro','14')")
           $code.Replace($old, '$acceleration = ''off''') | Set-Content $bootstrap -Encoding utf8
           # Google's documented Maven Central mirror avoids shared-runner 429s.
           $settings = './service-lab/settings.gradle'
@@ -41,11 +45,13 @@ jobs:
           (Get-Content $settings -Raw).Replace('mavenCentral()', $repo) | Set-Content $settings -Encoding utf8
           'org.gradle.workers.max=2' | Add-Content './service-lab/gradle.properties'
       - name: Windows build unit tests and lint
+        id: build
         run: ./tools/windows-ci.ps1 -Phase Build -DeviceTests
       - name: Android emulator two complete countdown cycles
         timeout-minutes: 35
         run: ./tools/windows-ci.ps1 -Phase Device -DeviceTests
       - name: Android Studio project sync and Run
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         timeout-minutes: 15
         run: ./tools/capture-studio-windows.ps1
       - name: Preserve APK original screenshots and logs
