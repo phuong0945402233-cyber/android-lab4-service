@@ -34,6 +34,8 @@ jobs:
           $code = Get-Content $bootstrap -Raw
           $old = '$acceleration = if ($LASTEXITCODE -eq 0) { ''auto'' } else { ''off'' }'
           if (-not $code.Contains($old)) { throw 'Unexpected emulator bootstrap.' }
+          # API 27 supports guest software rendering; API 28 falls back to the failing host renderer.
+          $code = $code.Replace('system-images;android-28;default;x86','system-images;android-27;default;x86')
           # Pin the official 31.3.14 emulator after a Windows TCG access violation.
           $code = $code.Replace('13610412','9322596').Replace('35.6.11','31.3.14')
           $code = $code.Replace("'-no-metrics',", '')
