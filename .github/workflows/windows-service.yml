@@ -139,10 +139,12 @@ jobs:
               $priorServer = ''
               do {
                   $server = (& $adb -s emulator-5554 shell pidof system_server 2>$null | Out-String).Trim()
-                  $packageReady = (& $adb -s emulator-5554 shell cmd package path android 2>$null | Out-String).Trim()
-                  if ($LASTEXITCODE -eq 0 -and $packageReady -match '^package:' -and $server -match '^\d+$' -and $server -eq $priorServer) { $stableSamples++ } else { $stableSamples = 0 }
+                  $packageReady = (& $adb -s emulator-5554 shell cmd package list packages --user 0 android 2>$null | Out-String).Trim()
+                  $packageExit = $LASTEXITCODE
+                  $frameworkReady = $packageReady -match '(?m)^package:android\r?$'
+                  if ($packageExit -eq 0 -and $frameworkReady -and $server -match '^\d+$' -and $server -eq $priorServer) { $stableSamples++ } else { $stableSamples = 0 }
                   $priorServer = $server
-                  ('{0:o} system_server={1} stable_samples={2}' -f (Get-Date),$server,$stableSamples) | Tee-Object -FilePath (Join-Path $logs 'boot-readiness.txt') -Append
+                  ('{0:o} system_server={1} stable_samples={2} package_exit={3} framework_package={4}' -f (Get-Date),$server,$stableSamples,$packageExit,$frameworkReady) | Tee-Object -FilePath (Join-Path $logs 'boot-readiness.txt') -Append
                   if ($stableSamples -ge 3) { break }
                   Start-Sleep -Seconds 5
               } while ((Get-Date) -lt $stableDeadline)
