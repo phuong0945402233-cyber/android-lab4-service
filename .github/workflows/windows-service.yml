@@ -39,15 +39,96 @@ jobs:
           # Pin the official 31.3.14 emulator after a Windows TCG access violation.
           $code = $code.Replace('13610412','9322596').Replace('35.6.11','31.3.14')
           $code = $code.Replace("'-no-metrics',", '')
-          # Native 512 MiB configuration sets ro.config.low_ram before system_server starts.
+          # Set the low-RAM init profile in a temporary ramdisk; preserve all other entries.
           $code = $code.Replace("'swiftshader_indirect'", "'off'").Replace('hw.gpu.enabled=yes','hw.gpu.enabled=no').Replace('hw.gpu.mode=swiftshader_indirect','hw.gpu.mode=off')
           $code = $code.Replace("'-no-boot-anim'", "'-verbose','-show-kernel','-no-boot-anim'")
-          $code = $code.Replace("'-memory','2048'", "'-memory','512'")
+          $code = $code.Replace("'-memory','2048'", "'-memory','1536'")
           $code = $code.Replace('hw.lcd.width=720','hw.lcd.width=540').Replace('hw.lcd.height=1280','hw.lcd.height=960').Replace('hw.lcd.density=320','hw.lcd.density=240')
-          $code = $code.Replace("'hw.keyboard=yes'", "'hw.keyboard=yes'`r`n        'vm.heapSize=128'")
           $code = $code.Replace('.AddMinutes(25)', '.AddMinutes(10)').Replace('within 25 minutes','within 10 minutes')
           $code = $code.Replace('0865071aecf3d90a5b967cb6cb0cd48bea0a58a26ef4953b32037671c129b7e9','647f40e2692001f3b6d55e02d48d056b0eb89dd89e76a5adb896400039016638')
           $code = $code.Replace("@('major','35'),@('minor','6'),@('micro','11')", "@('major','31'),@('minor','3'),@('micro','14')")
+          $profileCode = @'
+          """Set one non-security Android init property in a disposable emulator ramdisk."""
+          from pathlib import Path
+          import gzip
+          import hashlib
+          import json
+          import sys
+          
+          
+          def entries(blob):
+              offset = 0
+              while blob[offset:offset + 6] == b"070701":
+                  header = blob[offset:offset + 110]
+                  values = [int(header[6 + i * 8:14 + i * 8], 16) for i in range(13)]
+                  name_end = offset + 110 + values[11]
+                  name_bytes = blob[offset + 110:name_end]
+                  start = (name_end + 3) & ~3
+                  end = (start + values[6] + 3) & ~3
+                  yield header, values, name_bytes, blob[start:start + values[6]]
+                  if name_bytes == b"TRAILER!!!\0":
+                      return
+                  offset = end
+              raise ValueError("Unsupported or incomplete cpio ramdisk")
+          
+          
+          def configure(source, target, evidence):
+              original = Path(source).read_bytes()
+              digest = hashlib.sha256(original).hexdigest()
+              expected = "a7580f1e23feaafc4322522799be7d09bd11d690d38f095cd073fa850751d40d"
+              if digest != expected:
+                  raise ValueError("The official API 27 ramdisk differs from the verified input")
+              old = list(entries(gzip.decompress(original)))
+              chunks = []
+              changed = []
+              for header, values, name, content in old:
+                  if name == b"init.ranchu.rc\0":
+                      marker = b"on early-init\n"
+                      assert content.count(marker) == 1
+                      assert b"ro.config.low_ram" not in content
+                      content = content.replace(marker, marker + b"    setprop ro.config.low_ram true\n", 1)
+                      header = header[:54] + f"{len(content):08x}".encode() + header[62:]
+                      changed.append(name[:-1].decode())
+                  record = header + name
+                  record += b"\0" * (-len(record) % 4)
+                  record += content
+                  record += b"\0" * (-len(content) % 4)
+                  chunks.append(record)
+              assert changed == ["init.ranchu.rc"]
+              modified_cpio = b"".join(chunks)
+              modified_cpio += b"\0" * (-len(modified_cpio) % 512)
+              new = list(entries(modified_cpio))
+              assert len(old) == len(new)
+              for before, after in zip(old, new):
+                  assert before[2] == after[2]
+                  if before[2] != b"init.ranchu.rc\0":
+                      assert before == after
+                  else:
+                      assert after[3].replace(b"    setprop ro.config.low_ram true\n", b"", 1) == before[3]
+                      assert before[0][:54] == after[0][:54] and before[0][62:] == after[0][62:]
+              output = gzip.compress(modified_cpio, mtime=0)
+              Path(target).write_bytes(output)
+              result = {"input_sha256": digest, "output_sha256": hashlib.sha256(output).hexdigest(),
+                        "changed_files": changed, "added_init_line": "setprop ro.config.low_ram true",
+                        "all_other_ramdisk_entries_unchanged": True}
+              Path(evidence).write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
+              print(json.dumps(result))
+          
+          
+          if __name__ == "__main__":
+              configure(*sys.argv[1:])
+          '@
+          $profileCode | Set-Content './service-lab/tools/configure-guest-profile.py' -Encoding utf8
+          $profileSetup = @'
+              $guestRamdisk = Join-Path $env:RUNNER_TEMP 'servicecountdown-profile-ramdisk.img'
+              $sourceRamdisk = Join-Path $sdk 'system-images/android-27/default/x86/ramdisk.img'
+              & python (Join-Path $PSScriptRoot 'configure-guest-profile.py') $sourceRamdisk $guestRamdisk (Join-Path $logs 'ramdisk-profile.json')
+              if ($LASTEXITCODE -ne 0) { throw 'Temporary guest boot profile could not be verified.' }
+          '@
+          $launchMarker = '    $emu = Start-Process -FilePath $emulator -ArgumentList @('
+          if (-not $code.Contains($launchMarker)) { throw 'Unexpected emulator launch marker.' }
+          $code = $code.Replace($launchMarker, $profileSetup + "`r`n" + $launchMarker)
+          $code = $code.Replace("'-avd','LabServiceWindows'", "'-ramdisk',`$guestRamdisk,'-avd','LabServiceWindows'")
           $readiness = @'
               $logcat = Start-Process -FilePath $adb -ArgumentList @('-s','emulator-5554','logcat','-v','threadtime') -PassThru -RedirectStandardOutput (Join-Path $logs 'android-live-logcat.txt') -RedirectStandardError (Join-Path $logs 'android-live-logcat-errors.txt')
               $lowRam = (& $adb -s emulator-5554 shell getprop ro.config.low_ram | Out-String).Trim()
