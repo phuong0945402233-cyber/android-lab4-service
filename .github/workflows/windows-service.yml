@@ -37,6 +37,9 @@ jobs:
           # Pin the official 31.3.14 emulator after a Windows TCG access violation.
           $code = $code.Replace('13610412','9322596').Replace('35.6.11','31.3.14')
           $code = $code.Replace("'-no-metrics',", '')
+          $code = $code.Replace("'swiftshader_indirect'", "'off'").Replace('hw.gpu.enabled=yes','hw.gpu.enabled=no').Replace('hw.gpu.mode=swiftshader_indirect','hw.gpu.mode=off')
+          $code = $code.Replace("'-no-boot-anim'", "'-show-kernel','-no-boot-anim'")
+          $code = $code.Replace('.AddMinutes(25)', '.AddMinutes(10)').Replace('within 25 minutes','within 10 minutes')
           $code = $code.Replace('0865071aecf3d90a5b967cb6cb0cd48bea0a58a26ef4953b32037671c129b7e9','647f40e2692001f3b6d55e02d48d056b0eb89dd89e76a5adb896400039016638')
           $code = $code.Replace("@('major','35'),@('minor','6'),@('micro','11')", "@('major','31'),@('minor','3'),@('micro','14')")
           $code.Replace($old, '$acceleration = ''off''') | Set-Content $bootstrap -Encoding utf8
@@ -45,12 +48,20 @@ jobs:
           $repo = 'maven { url "https://maven-central.storage-download.googleapis.com/maven2/" }; mavenCentral()'
           (Get-Content $settings -Raw).Replace('mavenCentral()', $repo) | Set-Content $settings -Encoding utf8
           'org.gradle.workers.max=2' | Add-Content './service-lab/gradle.properties'
+          $ideScript = './service-lab/tools/capture-studio-windows.ps1'
+          $ideCode = Get-Content $ideScript -Raw
+          $ideCode.Replace('"idea.config.path=$config", "idea.system.path=$system",', '"idea.config.path=$config", "idea.system.path=$system", "idea.log.path=$system/log",') | Set-Content $ideScript -Encoding utf8
       - name: Windows build unit tests and lint
         id: build
         run: ./tools/windows-ci.ps1 -Phase Build -DeviceTests
       - name: Android emulator two complete countdown cycles
-        timeout-minutes: 35
+        timeout-minutes: 20
         run: ./tools/windows-ci.ps1 -Phase Device -DeviceTests
+      - name: Preserve readable emulator startup diagnostics
+        if: ${{ !cancelled() }}
+        run: |
+          Get-Content ./artifacts/windows/bootstrap/emulator-stdout.txt -Tail 90 -ErrorAction SilentlyContinue
+          Get-Content ./artifacts/windows/bootstrap/emulator-stderr.txt -Tail 50 -ErrorAction SilentlyContinue
       - name: Android Studio project sync and Run
         if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         timeout-minutes: 15
