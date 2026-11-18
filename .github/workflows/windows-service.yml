@@ -34,17 +34,41 @@ jobs:
           $code = Get-Content $bootstrap -Raw
           $old = '$acceleration = if ($LASTEXITCODE -eq 0) { ''auto'' } else { ''off'' }'
           if (-not $code.Contains($old)) { throw 'Unexpected emulator bootstrap.' }
-          # API 27 supports guest software rendering; API 28 falls back to the failing host renderer.
+          # Retain the official Android 8.1 image used for the successful boot.
           $code = $code.Replace('system-images;android-28;default;x86','system-images;android-27;default;x86')
           # Pin the official 31.3.14 emulator after a Windows TCG access violation.
           $code = $code.Replace('13610412','9322596').Replace('35.6.11','31.3.14')
           $code = $code.Replace("'-no-metrics',", '')
-          $code = $code.Replace("'swiftshader_indirect'", "'off'").Replace('hw.gpu.enabled=yes','hw.gpu.enabled=no').Replace('hw.gpu.mode=swiftshader_indirect','hw.gpu.mode=off')
+          # Use Windows ANGLE D3D11 instead of the guest renderer that restarted system_server.
+          $code = $code.Replace("'swiftshader_indirect'", "'angle_indirect'").Replace('hw.gpu.mode=swiftshader_indirect','hw.gpu.mode=angle_indirect')
           $code = $code.Replace("'-no-boot-anim'", "'-show-kernel','-no-boot-anim'")
           $code = $code.Replace('.AddMinutes(25)', '.AddMinutes(10)').Replace('within 25 minutes','within 10 minutes')
           $code = $code.Replace('0865071aecf3d90a5b967cb6cb0cd48bea0a58a26ef4953b32037671c129b7e9','647f40e2692001f3b6d55e02d48d056b0eb89dd89e76a5adb896400039016638')
           $code = $code.Replace("@('major','35'),@('minor','6'),@('micro','11')", "@('major','31'),@('minor','3'),@('micro','14')")
+          $readiness = @'
+              $logcat = Start-Process -FilePath $adb -ArgumentList @('-s','emulator-5554','logcat','-v','threadtime') -PassThru -RedirectStandardOutput (Join-Path $logs 'android-live-logcat.txt') -RedirectStandardError (Join-Path $logs 'android-live-logcat-errors.txt')
+              $stableDeadline = (Get-Date).AddMinutes(3)
+              $stableSamples = 0
+              $priorServer = ''
+              do {
+                  $server = (& $adb -s emulator-5554 shell pidof system_server 2>$null | Out-String).Trim()
+                  $packageReady = (& $adb -s emulator-5554 shell pm path android 2>$null | Out-String).Trim()
+                  if ($LASTEXITCODE -eq 0 -and $packageReady -match '^package:' -and $server -match '^\d+$' -and $server -eq $priorServer) { $stableSamples++ } else { $stableSamples = 0 }
+                  $priorServer = $server
+                  ('{0:o} system_server={1} stable_samples={2}' -f (Get-Date),$server,$stableSamples) | Tee-Object -FilePath (Join-Path $logs 'boot-readiness.txt') -Append
+                  if ($stableSamples -ge 3) { break }
+                  Start-Sleep -Seconds 5
+              } while ((Get-Date) -lt $stableDeadline)
+              if ($stableSamples -lt 3) { throw 'Android package service did not stabilize.' }
+              & $adb -s emulator-5554 shell getprop | Set-Content (Join-Path $logs 'android-properties.txt')
+              & $adb -s emulator-5554 shell dumpsys SurfaceFlinger | Set-Content (Join-Path $logs 'surfaceflinger.txt')
+          '@
+          $marker = '    & $adb -s emulator-5554 shell input keyevent 82'
+          if (-not $code.Contains($marker)) { throw 'Unexpected boot readiness marker.' }
+          $code = $code.Replace($marker, $readiness + "`r`n" + $marker)
           $code.Replace($old, '$acceleration = ''off''') | Set-Content $bootstrap -Encoding utf8
+          $verify = './service-lab/tools/verify-windows.ps1'
+          (Get-Content $verify -Raw).Replace("@('install','-r',", "@('install','--no-streaming','-r',") | Set-Content $verify -Encoding utf8
           # Google's documented Maven Central mirror avoids shared-runner 429s.
           $settings = './service-lab/settings.gradle'
           $repo = 'maven { url "https://maven-central.storage-download.googleapis.com/maven2/" }; mavenCentral()'
@@ -64,6 +88,7 @@ jobs:
         run: |
           Get-Content ./artifacts/windows/bootstrap/emulator-stdout.txt -Tail 90 -ErrorAction SilentlyContinue
           Get-Content ./artifacts/windows/bootstrap/emulator-stderr.txt -Tail 50 -ErrorAction SilentlyContinue
+          Get-Content ./artifacts/windows/bootstrap/android-live-logcat.txt -Tail 100 -ErrorAction SilentlyContinue
       - name: Android Studio project sync and Run
         if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         timeout-minutes: 15
