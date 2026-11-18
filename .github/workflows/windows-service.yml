@@ -55,6 +55,9 @@ jobs:
           import json
           import sys
           
+          PROFILE_LINE = b"    setprop ro.config.low_ram true\n    setprop qemu.gles 0\n"
+          PROFILE_TRIGGERS = b"\non property:qemu.gles=1\n    setprop qemu.gles 0\non property:qemu.gles=2\n    setprop qemu.gles 0\n"
+          
           
           def entries(blob):
               offset = 0
@@ -86,7 +89,7 @@ jobs:
                       marker = b"on early-init\n"
                       assert content.count(marker) == 1
                       assert b"ro.config.low_ram" not in content
-                      content = content.replace(marker, marker + b"    setprop ro.config.low_ram true\n", 1)
+                      content = content.replace(marker, marker + PROFILE_LINE, 1) + PROFILE_TRIGGERS
                       header = header[:54] + f"{len(content):08x}".encode() + header[62:]
                       changed.append(name[:-1].decode())
                   record = header + name
@@ -104,13 +107,13 @@ jobs:
                   if before[2] != b"init.ranchu.rc\0":
                       assert before == after
                   else:
-                      assert after[3].replace(b"    setprop ro.config.low_ram true\n", b"", 1) == before[3]
+                      assert after[3].removesuffix(PROFILE_TRIGGERS).replace(PROFILE_LINE, b"", 1) == before[3]
                       assert before[0][:54] == after[0][:54] and before[0][62:] == after[0][62:]
               output = gzip.compress(modified_cpio, mtime=0)
               Path(target).write_bytes(output)
               result = {"input_sha256": digest, "output_sha256": hashlib.sha256(output).hexdigest(),
                         "changed_files": changed, "added_init_line": "setprop ro.config.low_ram true",
-                        "all_other_ramdisk_entries_unchanged": True}
+                        "all_other_ramdisk_entries_unchanged": True, "software_view_renderer": "qemu.gles=0"}
               Path(evidence).write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
               print(json.dumps(result))
           
@@ -134,6 +137,9 @@ jobs:
               $lowRam = (& $adb -s emulator-5554 shell getprop ro.config.low_ram | Out-String).Trim()
               $lowRam | Set-Content (Join-Path $logs 'low-ram-profile.txt')
               if ($lowRam -ne 'true') { throw 'The requested software framework profile was not applied.' }
+              $viewRenderer = (& $adb -s emulator-5554 shell getprop qemu.gles | Out-String).Trim()
+              $viewRenderer | Set-Content (Join-Path $logs 'software-view-renderer.txt')
+              if ($viewRenderer -ne '0') { throw 'Android view rendering was not set to software mode.' }
               $stableDeadline = (Get-Date).AddMinutes(8)
               $stableSamples = 0
               $priorServer = ''
